@@ -1,0 +1,62 @@
+name: Leads Olisto
+
+on:
+  schedule:
+    - cron: "*/2 * * * *"
+  workflow_dispatch: {}
+
+concurrency:
+  group: olisto-leads
+  cancel-in-progress: false
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Cache Playwright (navigateur)
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: pw-browser-chromium
+
+      - name: Cache profil navigateur (session intranet persistante)
+        uses: actions/cache/restore@v4
+        with:
+          path: pw-profile
+          key: pw-profile-${{ github.run_id }}
+          restore-keys: pw-profile-
+
+      - name: Cache node_modules
+        uses: actions/cache@v4
+        with:
+          path: node_modules
+          key: node-modules-${{ hashFiles('package.json') }}
+
+      - name: Installer dépendances
+        run: |
+          npm install --no-audit --no-fund
+          npx playwright install chromium --with-deps
+
+      - name: Scan des leads
+        run: node bot.js --once
+        env:
+          INTRANET_URL: https://intranet.olisto.fr
+          LEAD_FOLDER: Lead Olisto
+          INTRANET_LOGIN: ${{ secrets.INTRANET_LOGIN }}
+          INTRANET_PASSWORD: ${{ secrets.INTRANET_PASSWORD }}
+          OLISTO_EMAIL_PASS: ${{ secrets.OLISTO_EMAIL_PASS }}
+          TELEGRAM_USER: ${{ secrets.TELEGRAM_USER }}
+
+      - name: Sauvegarder le profil (cookies rafraîchis)
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: pw-profile
+          key: pw-profile-${{ github.run_id }}

@@ -1,0 +1,20 @@
+{
+  "name": "olisto-lead-bot",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "cheerio": "^1.2.0",
+    "dotenv": "^18.0.8",
+    "imapflow": "^2.8.0",
+    "mailparser": "^3.12.2",
+    "playwright": "^1.64.1"
+  }
+}

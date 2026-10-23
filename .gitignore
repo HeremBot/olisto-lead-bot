@@ -1,0 +1,9 @@
+node_modules/
+logs/
+pw-profile/
+bot.lock
+.env
+diag.js
+diag2.js
+test-folders.js
+test-inbox.js
