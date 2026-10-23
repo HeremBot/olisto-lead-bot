@@ -9,6 +9,9 @@ concurrency:
   group: olisto-leads
   cancel-in-progress: false
 
+permissions:
+  contents: write
+
 jobs:
   scan:
     runs-on: ubuntu-latest
@@ -53,6 +56,7 @@ jobs:
           INTRANET_PASSWORD: ${{ secrets.INTRANET_PASSWORD }}
           OLISTO_EMAIL_PASS: ${{ secrets.OLISTO_EMAIL_PASS }}
           TELEGRAM_USER: ${{ secrets.TELEGRAM_USER }}
+          RECLAIM_TAKEN: 'true'
 
       - name: Sauvegarder le profil (cookies rafraîchis)
         if: always()
@@ -60,3 +64,15 @@ jobs:
         with:
           path: pw-profile
           key: pw-profile-${{ github.run_id }}
+
+      - name: Keepalive (évite la désactivation auto du cron après 60 j d'inactivité)
+        if: github.event_name == 'schedule'
+        run: |
+          last=$(git log -1 --format=%ct)
+          now=$(date +%s)
+          if [ $((now - last)) -gt 3456000 ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git commit --allow-empty -m "keepalive"
+            git push
+          fi

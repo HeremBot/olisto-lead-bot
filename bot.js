@@ -80,7 +80,7 @@ async function notify(text) {
       log('Erreur WhatsApp:', e.message);
     }
   }
-  log('[NOTIFICATION NON CONFIGURÉE]', text);
+  log('[NOTIFICATION NON CONFIGURÉE]');
   return false;
 }
 
@@ -136,11 +136,11 @@ async function ensureLoggedIn(page) {
 }
 
 // Ouvre le lien du lead et clique sur le bouton de claim
-async function claimLead(claimLink) {
+async function claimLead(claimLink, opts = {}) {
   fs.mkdirSync(DEBUG_DIR, { recursive: true });
   const ctx = await getBrowser();
   const page = await ctx.newPage();
-  const result = { status: 'unknown', leadId: null, url: null, text: '' };
+  const result = { status: 'unknown', leadId: null, url: null, text: '', takenBy: null, takenAt: null, reclaimAt: null };
   try {
     await page.goto(claimLink, { waitUntil: 'domcontentloaded', timeout: 45000 });
     // Le lien Brevo redirige vers /?lead=N ; le redirect_to du login nous ramène ensuite
@@ -161,12 +161,21 @@ async function claimLead(claimLink) {
     await page.screenshot({ path: path.join(DEBUG_DIR, `lead-${result.leadId || 'x'}-1.png`), fullPage: false });
 
     if (TAKEN_RE.test(bodyText)) {
-      result.status = 'taken';
-      return result;
+      const taker = bodyText.match(/pris\s+par\s+([^.,()]{2,60}?)\s+à\s+(\d{1,2}:\d{2}(?::\d{2})?)/i);
+      if (taker) { result.takenBy = taker[1].trim(); result.takenAt = taker[2]; }
+      const rec = bodyText.match(/le\s+demander\s+à\s+(\d{1,2}:\d{2}(?::\d{2})?)/i);
+      if (rec) result.reclaimAt = rec[1];
+      if (!opts.reclaim) {
+        result.status = 'taken';
+        return result;
+      }
+      result.status = 'unknown'; // en mode reclaim on continue vers le lien "demander"
     }
 
     // Cherche le bouton/lien de claim
-    const btn = page.locator(`a:has-text("disponible"), button:has-text("disponible"), a:has-text("prendre"), button:has-text("prendre"), a:has-text("récupérer"), button:has-text("récupérer")`).first();
+    const btn = opts.reclaim
+      ? page.locator('a:has-text("demander"), button:has-text("demander")').first()
+      : page.locator(`a:has-text("disponible"), button:has-text("disponible"), a:has-text("prendre"), button:has-text("prendre"), a:has-text("récupérer"), button:has-text("récupérer")`).first();
     if (await btn.count() === 0) {
       result.status = 'unknown';
       return result;
@@ -206,7 +215,7 @@ async function processLeadEmail(client, uid) {
   const from = (parsed.from && parsed.from.text) || '';
   if (!/marketing@olisto\.fr/i.test(from) || !/^Nouveau lead/i.test(subject)) return;
 
-  log(`Lead détecté (uid ${uid}): ${subject.slice(0, 90)}`);
+  log(`Lead détecté (uid ${uid})`);
   let lead;
   try {
     lead = parseLeadEmail(parsed.html || parsed.text || '');
@@ -228,14 +237,43 @@ async function processLeadEmail(client, uid) {
   if (result.status === 'claimed') {
     notif = `✅ Lead CLAIMÉ: ${detail}\nBesoin: ${lead.besoin || '?'}\nArrivé: ${lead.arrived || '?'}\n-> Vérifie Actelo`;
   } else if (result.status === 'taken') {
-    notif = `⏱️ Lead déjà pris: ${detail}\nBesoin: ${lead.besoin || '?'}`;
+    notif = `⏱️ Lead déjà pris${result.takenBy ? ` par ${result.takenBy}` : ''}${result.takenAt ? ` à ${result.takenAt}` : ''}: ${detail}\nBesoin: ${lead.besoin || '?'}${result.reclaimAt ? `\nDemander possible à ${result.reclaimAt}` : ''}`;
   } else if (result.status === 'error') {
     notif = `⚠️ Erreur auto-claim: ${detail}\n${result.error || ''}\n-> AGIS VITE: ${lead.claimLink || ''}`;
   } else {
     notif = `⚡ Lead à vérifier: ${detail}\nBesoin: ${lead.besoin || '?'}\nArrivé: ${lead.arrived || '?'}\n-> ${lead.claimLink || INTRANET}`;
   }
   await notify(notif);
-  appendLog({ uid, subject, detail, status: result.status, leadId: result.leadId, text: result.text });
+  appendLog({ uid, subject, detail, status: result.status, leadId: result.leadId, takenBy: result.takenBy, text: result.text });
+
+  // Reclaim : après le délai, si le preneur n'a pas traité le lead, on le demande
+  const RECLAIM_TAKEN = /^(1|true|oui)$/i.test(process.env.RECLAIM_TAKEN || '');
+  if (RECLAIM_TAKEN && result.status === 'taken' && result.leadId && result.reclaimAt) {
+    const self = (process.env.INTRANET_LOGIN || '').toLowerCase();
+    const isSelf = result.takenBy && self && result.takenBy.toLowerCase().includes(self.split('.')[0]);
+    const [hh, mm, ss] = result.reclaimAt.split(':').map(Number);
+    const target = new Date();
+    target.setHours(hh, mm, ss || 0, 0);
+    const delay = target - new Date();
+    if (!isSelf && delay > 0 && delay < 30 * 60000) {
+      const wait = delay + 20000;
+      const leadId = result.leadId;
+      log(`Reclaim programmé (lead id) dans ${Math.round(wait / 1000)}s`);
+      setTimeout(async () => {
+        try {
+          const r2 = await claimLead(`${INTRANET}/?lead=${leadId}`, { reclaim: true });
+          if (r2.status === 'claimed') {
+            await notify(`✅ Lead RÉCUPÉRÉ via demande: ${detail}\n-> Vérifie Actelo`);
+          } else {
+            await notify(`ℹ️ Demande de lead envoyée (${r2.status}): ${detail}`);
+          }
+          appendLog({ uid, subject, detail, status: 'reclaim-' + r2.status, leadId, takenBy: r2.takenBy, text: r2.text });
+        } catch (e) {
+          await notify(`⚠️ Reclaim échoué (lead id): ${e.message.slice(0, 100)}`);
+        }
+      }, wait);
+    }
+  }
 
   // Marque lu et range dans "Lead Olisto"
   try {
